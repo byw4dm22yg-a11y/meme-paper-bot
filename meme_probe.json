@@ -1,0 +1,92 @@
+{
+ "id": "solana_D7onqSoH6GfEYy9SwB8yiWgnCRSnKPYGkrPRtF91QwJh",
+ "type": "pool",
+ "attributes": {
+  "base_token_price_usd": "0.0000628971789139609624512720605114140386145873730860895397701844859",
+  "base_token_price_native_currency": "0.000000554708141793661",
+  "quote_token_price_usd": "103.160339353342873090386978626234390360378851643",
+  "quote_token_price_native_currency": "1.0",
+  "base_token_price_quote_token": "0.0000005547081418",
+  "quote_token_price_base_token": "1802749.81500448",
+  "address": "D7onqSoH6GfEYy9SwB8yiWgnCRSnKPYGkrPRtF91QwJh",
+  "name": "TOLYCHAN / SOL",
+  "pool_created_at": "2026-10-28T20:05:13Z",
+  "fdv_usd": "55760.20429",
+  "market_cap_usd": null,
+  "price_change_percentage": {
+   "m5": "15.173",
+   "m15": "15.173",
+   "m30": "15.173",
+   "h1": "15.173",
+   "h6": "15.173",
+   "h24": "15.173"
+  },
+  "transactions": {
+   "m5": {
+    "buys": 60,
+    "sells": 38,
+    "buyers": 51,
+    "sellers": 31
+   },
+   "m15": {
+    "buys": 60,
+    "sells": 38,
+    "buyers": 51,
+    "sellers": 31
+   },
+   "m30": {
+    "buys": 60,
+    "sells": 38,
+    "buyers": 51,
+    "sellers": 31
+   },
+   "h1": {
+    "buys": 60,
+    "sells": 38,
+    "buyers": 51,
+    "sellers": 31
+   },
+   "h6": {
+    "buys": 60,
+    "sells": 38,
+    "buyers": 51,
+    "sellers": 31
+   },
+   "h24": {
+    "buys": 60,
+    "sells": 38,
+    "buyers": 51,
+    "sellers": 31
+   }
+  },
+  "volume_usd": {
+   "m5": "11301.179779551",
+   "m15": "11301.179779551",
+   "m30": "11301.179779551",
+   "h1": "11301.179779551",
+   "h6": "11301.179779551",
+   "h24": "11301.179779551"
+  },
+  "reserve_in_usd": "20534.7721"
+ },
+ "relationships": {
+  "base_token": {
+   "data": {
+    "id": "solana_5bM8GpPMD4QKbjYTMgqoQhQur28hVLBnqarJAvFenf63",
+    "type": "token"
+   }
+  },
+  "quote_token": {
+   "data": {
+    "id": "solana_So11111111111111111111111111111111111111112",
+    "type": "token"
+   }
+  },
+  "dex": {
+   "data": {
+    "id": "pumpswap",
+    "type": "dex"
+   }
+  }
+ }
+}
