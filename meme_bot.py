@@ -6,7 +6,7 @@ import json
 import math
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -21,6 +21,9 @@ MIN_FDV, MAX_FDV = 100_000, 20_000_000
 MIN_H1_CHG, MAX_H1_CHG = 5.0, 120.0
 MIN_BUYERS, MIN_SELLERS, MIN_BUY_SELL_RATIO = 60, 20, 1.1
 RUG_LIQ_FRACTION = 0.30     # liquidity falling below 30% of entry = rug
+NEW_PAGES = 5               # newest-pool pages scanned per run (20 pools each)
+WATCH_MAX = 400             # coins remembered while they mature
+REFRESH_PER_RUN = 120       # remembered coins re-checked per run
 WRITE_OFF_AFTER_MISSING = 8 # runs without data (about 2 hours) = total loss
 FEE_PCT = 0.5               # DEX fee per side
 BASE_SLIP_PCT = 1.0         # minimum slippage per side
@@ -129,7 +132,7 @@ def sell(s, key, price, liq, now, rule, why):
 
 def fetch_candidates(get=http_json):
     pools, answered = {}, False
-    urls = [f"{GT}/networks/solana/new_pools?page=1", f"{GT}/networks/solana/new_pools?page=2", f"{GT}/networks/solana/trending_pools"]
+    urls = [f"{GT}/networks/solana/new_pools?page={k}" for k in range(1, NEW_PAGES + 1)] + [f"{GT}/networks/solana/trending_pools"]
     raw_first = None
     for u in urls:
         d = get(u)
@@ -174,11 +177,26 @@ def run_once(get=http_json, rug=rug_ok, now=None, pause=True):
     sp = sol_price(get)
     if s["bench"] is None and sp:
         s["bench"] = {"sol_qty": START_CASH / sp}
-    cands, raw_first, answered = fetch_candidates(get)
+    fresh, raw_first, answered = fetch_candidates(get)
     if raw_first is not None and not os.path.exists(PROBE):
         with open(PROBE, "w") as f:
             json.dump(raw_first, f, indent=1)
-    held = fetch_held(list(s["positions"]), get) if s["positions"] else {}
+    # remember every coin we see, then re-check the ones that have had time to prove themselves
+    watch = s.setdefault("watch", {})
+    for k, c in fresh.items():
+        if k not in watch:
+            a0 = age_minutes(c["created"], now)
+            watch[k] = (now - timedelta(minutes=a0)).isoformat(timespec="seconds") if a0 is not None else now.isoformat(timespec="seconds")
+    for k in list(watch):
+        a0 = (now - datetime.fromisoformat(watch[k])).total_seconds() / 60
+        if a0 > MAX_AGE_H * 60 or (len(watch) > WATCH_MAX and a0 > 180):
+            del watch[k]
+    mature = sorted((k for k in watch if k not in fresh and k not in s["positions"]
+                     and (now - datetime.fromisoformat(watch[k])).total_seconds() / 60 >= MIN_AGE_MIN),
+                    key=lambda k: watch[k], reverse=True)[:REFRESH_PER_RUN]
+    got = fetch_held(list(s["positions"]) + mature, get) if (s["positions"] or mature) else {}
+    held = {k: v for k, v in got.items() if k in s["positions"]}
+    cands = {**fresh, **{k: v for k, v in got.items() if k not in s["positions"]}}
     if not answered:
         print("no data this run (feed unreachable), stopping safely (nothing traded)")
         return
@@ -210,6 +228,9 @@ def run_once(get=http_json, rug=rug_ok, now=None, pause=True):
         elif held_h >= MAX_HOURS:
             sell(s, key, px, liq, now, "time limit", f"held {held_h:.0f}h")
     # ---- the funnel: why coins are rejected ----
+    ages = [a1 for a1 in (age_minutes(c["created"], now) for c in cands.values()) if a1 is not None]
+    if ages:
+        print(f"ages of coins seen: youngest {min(ages):.0f} min, oldest {max(ages)/60:.1f} h, remembered {len(watch)}")
     f = dict(scanned=len(cands), young_old=0, low_liq=0, low_vol=0, bad_fdv=0, weak_mom=0, overheated=0, few_buyers=0,
              sell_pressure=0, owned_or_cooldown=0, rug_check=0, passed=0, bought=0)
     passed = []
