@@ -2,7 +2,7 @@ name: meme-paper-bot
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/30 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -10,24 +10,30 @@ permissions:
 
 concurrency:
   group: meme-paper-bot
+  cancel-in-progress: false
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 58
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install requests
+      - name: Git identity
+        run: |
+          git config user.name "meme-paper-bot"
+          git config user.email "bot@users.noreply.github.com"
       - name: Run meme paper bot
+        env:
+          LOOP_MINUTES: "50"
+          SAVE_EACH_SCAN: "1"
         run: python meme_bot.py
       - name: Save logs
         if: always()
         run: |
-          git config user.name "meme-paper-bot"
-          git config user.email "bot@users.noreply.github.com"
           for f in meme_state.json meme_trades.csv meme_equity.csv meme_funnel.csv meme_probe.json; do [ -f "$f" ] && git add "$f"; done
           git commit -m "meme paper run" || echo "nothing to commit"
           git pull --rebase || true
