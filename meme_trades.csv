@@ -1,0 +1,2 @@
+time_utc,coin,side,qty,price,fee_usd,usd,rule,reason
+2026-10-29T00:03:41+00:00,DUBBLE / SOL,buy,22590.471,0.003477129873,1.45,80.0,momentum,"+11% in 1h, liquidity $178,152, 3151 buyers, rug check clean"
