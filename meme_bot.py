@@ -5,6 +5,7 @@ import csv
 import json
 import math
 import os
+import subprocess
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -171,6 +172,37 @@ def sol_price(get=http_json):
         return None
 
 
+def check_exits(s, held, cands, prices, now, count_missing=True):
+    """Stop loss, trailing stop, rug and time limit, using the prices we can actually see (not the stop level)."""
+    for key in list(s["positions"]):
+        p = s["positions"][key]
+        cur = held.get(key) or cands.get(key)
+        if not cur:
+            if not count_missing:
+                continue          # fast checks never write a coin off: one missed look is not a vanished coin
+            p["missing"] = p.get("missing", 0) + 1
+            if p["missing"] >= WRITE_OFF_AFTER_MISSING:
+                sell(s, key, 0.0, 0, now, "vanished", "no data for about 2 hours, written off as a total loss")
+            continue
+        p["missing"] = 0
+        px, liq = cur["price"], cur["liq"] or 0
+        p["last"] = px
+        prices[key] = px
+        p["peak"] = max(p["peak"], px)
+        chg = (px / p["avg"] - 1) * 100
+        peak_gain = (p["peak"] / p["avg"] - 1) * 100
+        drop = (1 - px / p["peak"]) * 100
+        held_h = (now - datetime.fromisoformat(p["bought"])).total_seconds() / 3600
+        if p["liq"] and liq < RUG_LIQ_FRACTION * p["liq"]:
+            sell(s, key, px, liq, now, "rug", f"liquidity collapsed to ${liq:,.0f}")
+        elif chg <= -STOP_PCT:
+            sell(s, key, px, liq, now, "stop loss", f"price {chg:+.1f}% from entry")
+        elif peak_gain >= TRAIL_START_PCT and drop >= TRAIL_DROP_PCT:
+            sell(s, key, px, liq, now, "trailing stop", f"fell {drop:.1f}% from its peak")
+        elif held_h >= MAX_HOURS:
+            sell(s, key, px, liq, now, "time limit", f"held {held_h:.0f}h")
+
+
 def run_once(get=http_json, rug=rug_ok, now=None, pause=True):
     now = now or datetime.now(timezone.utc)
     s = load_state() or {"cash": START_CASH, "positions": {}, "cooldown": [], "bench": None, "start": now.isoformat(timespec="seconds")}
@@ -201,32 +233,7 @@ def run_once(get=http_json, rug=rug_ok, now=None, pause=True):
         print("no data this run (feed unreachable), stopping safely (nothing traded)")
         return
     prices = {}
-    # ---- exits, using the prices we can actually see (not the stop level) ----
-    for key in list(s["positions"]):
-        p = s["positions"][key]
-        cur = held.get(key) or cands.get(key)
-        if not cur:
-            p["missing"] = p.get("missing", 0) + 1
-            if p["missing"] >= WRITE_OFF_AFTER_MISSING:
-                sell(s, key, 0.0, 0, now, "vanished", "no data for about 2 hours, written off as a total loss")
-            continue
-        p["missing"] = 0
-        px, liq = cur["price"], cur["liq"] or 0
-        p["last"] = px
-        prices[key] = px
-        p["peak"] = max(p["peak"], px)
-        chg = (px / p["avg"] - 1) * 100
-        peak_gain = (p["peak"] / p["avg"] - 1) * 100
-        drop = (1 - px / p["peak"]) * 100
-        held_h = (now - datetime.fromisoformat(p["bought"])).total_seconds() / 3600
-        if p["liq"] and liq < RUG_LIQ_FRACTION * p["liq"]:
-            sell(s, key, px, liq, now, "rug", f"liquidity collapsed to ${liq:,.0f}")
-        elif chg <= -STOP_PCT:
-            sell(s, key, px, liq, now, "stop loss", f"price {chg:+.1f}% from entry")
-        elif peak_gain >= TRAIL_START_PCT and drop >= TRAIL_DROP_PCT:
-            sell(s, key, px, liq, now, "trailing stop", f"fell {drop:.1f}% from its peak")
-        elif held_h >= MAX_HOURS:
-            sell(s, key, px, liq, now, "time limit", f"held {held_h:.0f}h")
+    check_exits(s, held, cands, prices, now, count_missing=True)
     # ---- the funnel: why coins are rejected ----
     ages = [a1 for a1 in (age_minutes(c["created"], now) for c in cands.values()) if a1 is not None]
     if ages:
@@ -293,5 +300,51 @@ def run_once(get=http_json, rug=rug_ok, now=None, pause=True):
     print("rejected: " + ", ".join(f"{k}={v}" for k, v in f.items() if k not in ("scanned", "passed", "bought") and v))
 
 
+def guard_check(get=http_json, now=None):
+    """Fast look at the open positions only: apply the exit rules, save, trade nothing new. Returns number of open positions."""
+    now = now or datetime.now(timezone.utc)
+    s = load_state()
+    if not s or not s["positions"]:
+        return 0
+    got = fetch_held(list(s["positions"]), get)
+    if got:                                   # feed down = skip this look, never sell on missing data
+        prices = {}
+        check_exits(s, got, {}, prices, now, count_missing=False)
+        with open(STATE, "w") as fh:
+            json.dump(s, fh, indent=1)
+    return len(s["positions"])
+
+
+def push_files():
+    """Inside GitHub Actions only: commit the data files so Atlas stays fresh and a cut-off run loses nothing."""
+    if os.environ.get("SAVE_EACH_SCAN") != "1":
+        return
+    try:
+        have = [f for f in (STATE, TRADES, EQUITY, FUNNEL, PROBE) if os.path.exists(f)]
+        for cmd in (["git", "add"] + have, ["git", "commit", "-m", "meme paper run"], ["git", "pull", "--rebase", "-X", "theirs"], ["git", "push"]):
+            subprocess.run(cmd, check=False, capture_output=True, timeout=60)
+    except Exception as e:
+        print(f"save skipped ({e})")
+
+
+def run_loop(minutes, scan_every=15, look_every=30, get=http_json, rug=rug_ok):
+    """Stay awake for `minutes`: a full scan every `scan_every` minutes, a quick stop-loss look every `look_every` seconds in between."""
+    end = time.time() + minutes * 60
+    next_scan = 0.0
+    while time.time() < end:
+        t0 = time.time()
+        if t0 >= next_scan:
+            run_once(get=get, rug=rug)
+            push_files()
+            next_scan = t0 + scan_every * 60
+        else:
+            guard_check(get)
+        time.sleep(max(1.0, look_every - (time.time() - t0)))
+
+
 if __name__ == "__main__":
-    run_once()
+    mins = float(os.environ.get("LOOP_MINUTES", "0") or 0)
+    if mins > 0:
+        run_loop(mins)
+    else:
+        run_once()
