@@ -4,3 +4,4 @@ time_utc,coin,side,qty,price,fee_usd,usd,rule,reason
 2026-10-29T13:36:03+00:00,PODCAT / SOL,buy,258751.6,0.0002946204577,1.4147,77.65,momentum,"+25% in 1h, liquidity $48,030, 245 buyers, rug check clean"
 2026-10-29T13:44:03+00:00,PODCAT / SOL,sell,258751.6,0.0002730614832,1.3098,69.35,stop loss,price -7.3% from entry (-7.3% before costs)
 2026-10-30T01:33:57+00:00,HI / HYPE,buy,206280.88,0.0003663899418,1.4048,76.98,momentum,"+19% in 1h, liquidity $56,958, 338 buyers, rug check clean"
+2026-10-30T01:35:57+00:00,HI / HYPE,sell,206280.88,0.0003415609163,1.3069,69.15,stop loss,price -6.8% from entry (-6.8% before costs)
