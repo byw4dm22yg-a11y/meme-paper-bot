@@ -32,6 +32,9 @@ NETWORK_FEE_USD = 0.25      # priority fee / tip per trade
 GT = "https://api.geckoterminal.com/api/v2"
 SOL_MINT = "So11111111111111111111111111111111111111112"
 STATE, TRADES, EQUITY, FUNNEL, PROBE = "meme_state.json", "meme_trades.csv", "meme_equity.csv", "meme_funnel.csv", "meme_probe.json"
+SHADOW = "meme_shadow.csv"
+CHECKPOINTS_H = (1, 4, 24)    # shadow log: look again this many hours after a coin passes the filters
+SHADOW_MAX = 300
 HEADERS = {"Accept": "application/json;version=20230302", "User-Agent": "paper-meme-bot/1.0"}
 
 
@@ -203,6 +206,52 @@ def check_exits(s, held, cands, prices, now, count_missing=True):
             sell(s, key, px, liq, now, "time limit", f"held {held_h:.0f}h")
 
 
+def shadow_register(s, passed, now):
+    """Remember every coin that passes the filters (bought or not) so we can see how it did later."""
+    sh = s.setdefault("shadow", {})
+    for c in passed:
+        if c["pool"] in sh or len(sh) >= SHADOW_MAX:
+            continue
+        sh[c["pool"]] = {"name": c["name"], "t": now.isoformat(timespec="seconds"), "entry": c["price"], "liq": c["liq"],
+                         "vol1h": c["vol1h"], "chg1h": c["chg1h"], "buyers": c["buyers"], "age": age_minutes(c["created"], now),
+                         "bought": 0, "done": []}
+
+
+def shadow_step(s, now, get=http_json):
+    """Log the price of shadow coins at each checkpoint (1h, 4h, 24h). Only ever reads prices, never trades."""
+    sh = s.get("shadow") or {}
+    due = []
+    for k, e in sh.items():
+        hrs = (now - datetime.fromisoformat(e["t"])).total_seconds() / 3600
+        if any(h <= hrs and h not in e["done"] for h in CHECKPOINTS_H):
+            due.append(k)
+    if not due:
+        return 0
+    got = fetch_held(due[:60], get)
+    logged = 0
+    for k in due[:60]:
+        e = sh[k]
+        hrs = (now - datetime.fromisoformat(e["t"])).total_seconds() / 3600
+        cur = got.get(k)
+        for h in CHECKPOINTS_H:
+            if h > hrs or h in e["done"]:
+                continue
+            if cur is None and hrs < h + 2:
+                continue                  # one missed look is not a dead coin: try again next run
+            px = cur["price"] if cur else 0.0
+            append_csv(SHADOW, ["time_utc", "name", "pool", "checkpoint_h", "entry_price", "price", "ret_pct", "liq_entry", "liq_now",
+                                "chg1h_at_entry", "vol1h", "buyers", "age_min", "bought"],
+                       [now.isoformat(timespec="seconds"), e["name"], k, h, f"{e['entry']:.10g}", f"{px:.10g}",
+                        round((px / e["entry"] - 1) * 100, 2) if e["entry"] else "", round(e["liq"] or 0), round((cur or {}).get("liq") or 0),
+                        round(e["chg1h"] or 0, 1), round(e["vol1h"] or 0), int(e["buyers"] or 0),
+                        round(e["age"]) if e["age"] is not None else "", e["bought"]])
+            e["done"].append(h)
+            logged += 1
+    for k in [k for k, e in sh.items() if len(e["done"]) == len(CHECKPOINTS_H)]:
+        del sh[k]
+    return logged
+
+
 def run_once(get=http_json, rug=rug_ok, now=None, pause=True):
     now = now or datetime.now(timezone.utc)
     s = load_state() or {"cash": START_CASH, "positions": {}, "cooldown": [], "bench": None, "start": now.isoformat(timespec="seconds")}
@@ -265,6 +314,7 @@ def run_once(get=http_json, rug=rug_ok, now=None, pause=True):
             passed.append(c)
     passed.sort(key=lambda c: c["chg1h"], reverse=True)
     f["passed"] = len(passed)
+    shadow_register(s, passed, now)
     for c in passed[:8]:
         if len(s["positions"]) >= MAX_POSITIONS or f["bought"] >= MAX_BUYS_PER_RUN:
             break
@@ -286,7 +336,9 @@ def run_once(get=http_json, rug=rug_ok, now=None, pause=True):
         log_trade(now, c["name"], "buy", qty, c["price"], fee, usd, "momentum",
                   f"+{c['chg1h']:.0f}% in 1h, liquidity ${c['liq']:,.0f}, {int(c['buyers'])} buyers, rug check {why}")
         f["bought"] += 1
+        s["shadow"].get(c["pool"], {})["bought"] = 1
     s["cooldown"] = s["cooldown"][-500:]
+    shadow_step(s, now, get)
     eq = equity(s, prices)
     hold = s["bench"]["sol_qty"] * sp if (s["bench"] and sp) else ""
     append_csv(EQUITY, ["time_utc", "equity_usd", "cash_usd", "btc_price", "btc_hold_usd", "bot_vs_hold_pct"],
@@ -320,7 +372,7 @@ def push_files():
     if os.environ.get("SAVE_EACH_SCAN") != "1":
         return
     try:
-        have = [f for f in (STATE, TRADES, EQUITY, FUNNEL, PROBE) if os.path.exists(f)]
+        have = [f for f in (STATE, TRADES, EQUITY, FUNNEL, PROBE, SHADOW) if os.path.exists(f)]
         for cmd in (["git", "add"] + have, ["git", "commit", "-m", "meme paper run"], ["git", "pull", "--rebase", "-X", "theirs"], ["git", "push"]):
             subprocess.run(cmd, check=False, capture_output=True, timeout=60)
     except Exception as e:
