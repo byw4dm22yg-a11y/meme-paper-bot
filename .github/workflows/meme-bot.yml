@@ -34,7 +34,7 @@ jobs:
       - name: Save logs
         if: always()
         run: |
-          for f in meme_state.json meme_trades.csv meme_equity.csv meme_funnel.csv meme_probe.json; do [ -f "$f" ] && git add "$f"; done
+          for f in meme_state.json meme_trades.csv meme_equity.csv meme_funnel.csv meme_probe.json meme_shadow.csv; do [ -f "$f" ] && git add "$f"; done
           git commit -m "meme paper run" || echo "nothing to commit"
           git pull --rebase || true
           git push || true
