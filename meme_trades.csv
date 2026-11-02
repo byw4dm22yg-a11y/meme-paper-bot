@@ -5,3 +5,5 @@ time_utc,coin,side,qty,price,fee_usd,usd,rule,reason
 2026-10-29T13:44:03+00:00,PODCAT / SOL,sell,258751.6,0.0002730614832,1.3098,69.35,stop loss,price -7.3% from entry (-7.3% before costs)
 2026-10-30T01:33:57+00:00,HI / HYPE,buy,206280.88,0.0003663899418,1.4048,76.98,momentum,"+19% in 1h, liquidity $56,958, 338 buyers, rug check clean"
 2026-10-30T01:35:57+00:00,HI / HYPE,sell,206280.88,0.0003415609163,1.3069,69.15,stop loss,price -6.8% from entry (-6.8% before costs)
+2026-11-02T18:24:14+00:00,Slingoor / SOL,buy,441380.02,0.0001698354423,1.3954,76.36,momentum,"+96% in 1h, liquidity $36,275, 3150 buyers, rug check clean"
+2026-11-02T18:24:14+00:00,MAMESUKE / STONK,buy,58387.177,0.00128199408,1.3937,76.25,momentum,"+59% in 1h, liquidity $97,996, 800 buyers, rug check clean"
