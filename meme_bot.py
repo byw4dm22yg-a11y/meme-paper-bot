@@ -1,6 +1,8 @@
 # meme_bot.py - PAPER-ONLY Solana memecoin bot. PRETEND MONEY. It never touches a wallet, a key or a real exchange.
 # It reads public data (GeckoTerminal, RugCheck), decides with fixed rules, and logs pretend trades with realistic costs.
 # Files: meme_state.json, meme_trades.csv, meme_equity.csv, meme_funnel.csv, meme_probe.json
+# v2: wider stop + breakeven + trail that clears costs, no time-stopping winners, stricter entries,
+#     risk-based sizing, loss-streak pause. See CHANGES.md. Still paper only.
 import csv
 import json
 import math
@@ -12,18 +14,33 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 START_CASH = 1000.0
-SIZE_PCT = 0.08            # each position is 8% of the account
-MAX_POSITIONS = 5
-MAX_BUYS_PER_RUN = 2
-STOP_PCT, TRAIL_START_PCT, TRAIL_DROP_PCT, MAX_HOURS = 6.0, 12.0, 10.0, 24
-MIN_LIQ, MIN_H1_VOL = 30_000, 40_000
-MIN_AGE_MIN, MAX_AGE_H = 30, 12
-MIN_FDV, MAX_FDV = 100_000, 20_000_000
-MIN_H1_CHG, MAX_H1_CHG = 5.0, 120.0
-MIN_BUYERS, MIN_SELLERS, MIN_BUY_SELL_RATIO = 60, 20, 1.1
+# ---- v2 rules. Why each changed is in CHANGES.md ----
+# Size by risk, not a flat %: lose about RISK_PCT of the account if the stop is hit (after costs).
+RISK_PCT = 1.0              # % of account at risk per trade
+MAX_SIZE_PCT = 0.10         # never more than 10% of the account in one coin
+MAX_POSITIONS = 4
+MAX_BUYS_PER_RUN = 1
+# Exits. v1 trailed from +12% with a 10% drop, which could sell at +0.8% = a loss after ~3.6% costs.
+STOP_PCT = 12.0             # v1: 6%, inside normal memecoin noise, so it got hit constantly
+BREAKEVEN_AT_PCT = 15.0     # once up 15%, the stop moves to entry + costs: a winner can't turn into a loser
+TRAIL_START_PCT = 25.0      # trailing switches on at +25% ...
+TRAIL_DROP_PCT = 12.0       # ... and sells after a 12% fall from the peak (worst trail exit: +10% before costs)
+TIME_LIMIT_H = 24           # only for dead trades that never reached BREAKEVEN_AT_PCT
+MAX_HOURS = 72              # absolute cap for everything else
+# Loss-streak brake: after this many losers in a row, buy nothing for PAUSE_HOURS.
+LOSS_STREAK, PAUSE_HOURS = 3, 6
+# Entry filters. v1 bought the biggest 1h pumps on coins 30 min old.
+MIN_LIQ, MIN_H1_VOL = 60_000, 40_000
+MIN_AGE_MIN, MAX_AGE_H = 120, 24   # skip the first 2 hours, when most rugs and dumps happen
+MIN_FDV, MAX_FDV = 150_000, 20_000_000
+MIN_H1_CHG, MAX_H1_CHG = 8.0, 40.0 # v1 allowed +120%: buying the top of a vertical candle
+MAX_M5_CHG, MIN_M5_CHG = 10.0, -4.0  # not mid-spike, and not already rolling over
+MIN_H6_CHG = 0.0            # the 6h trend must be up too, not a dead-cat bounce
+MIN_BUYERS, MIN_SELLERS, MIN_BUY_SELL_RATIO = 100, 30, 1.2
+MAX_BUYS_PER_BUYER = 4.0    # lots of buys from few wallets = bots / wash trading
 RUG_LIQ_FRACTION = 0.30     # liquidity falling below 30% of entry = rug
 NEW_PAGES = 5               # newest-pool pages scanned per run (20 pools each)
-WATCH_MAX = 400             # coins remembered while they mature
+WATCH_MAX = 1500            # coins remembered while they mature (raised: coins now wait 2h+)
 REFRESH_PER_RUN = 120       # remembered coins re-checked per run
 WRITE_OFF_AFTER_MISSING = 8 # runs without data (about 2 hours) = total loss
 FEE_PCT = 0.5               # DEX fee per side
@@ -59,6 +76,11 @@ def http_json(url):
 
 
 def append_csv(path, header, row):
+    if os.path.exists(path):                 # columns changed since v1: keep the old file, start a fresh one
+        with open(path, newline="") as f:
+            old = next(csv.reader(f), None)
+        if old is not None and old != header:
+            os.replace(path, path.replace(".csv", "_v1.csv"))
     new = not os.path.exists(path)
     with open(path, "a", newline="") as f:
         w = csv.writer(f)
@@ -84,6 +106,8 @@ def parse_pool(item):
         return {"pool": a["address"], "name": a.get("name", "?"), "mint": base.split("_", 1)[-1] if base else None,
                 "price": num(a.get("base_token_price_usd")), "liq": num(a.get("reserve_in_usd")), "fdv": num(a.get("fdv_usd")),
                 "vol1h": num((a.get("volume_usd") or {}).get("h1")), "chg1h": num((a.get("price_change_percentage") or {}).get("h1")),
+                "chg5m": num((a.get("price_change_percentage") or {}).get("m5")),
+                "chg6h": num((a.get("price_change_percentage") or {}).get("h6")),
                 "buys": num(h1.get("buys")), "sells": num(h1.get("sells")), "buyers": num(h1.get("buyers")), "sellers": num(h1.get("sellers")),
                 "created": a.get("pool_created_at")}
     except Exception:
@@ -114,6 +138,24 @@ def cost_pct(size_usd, liq):
     return FEE_PCT + max(BASE_SLIP_PCT, 2 * impact)
 
 
+def round_trip_pct(size_usd, liq):
+    """Buy + sell cost as % of the position, network fees included."""
+    return 2 * cost_pct(size_usd, liq) + (2 * NETWORK_FEE_USD / size_usd * 100 if size_usd else 0)
+
+
+def position_size(total, cash, liq):
+    """Size so a stop-out loses about RISK_PCT of the account after costs, capped at MAX_SIZE_PCT."""
+    usd = min(total * MAX_SIZE_PCT, cash)
+    for _ in range(3):                       # costs depend on size, so settle it in a few passes
+        loss_frac = (STOP_PCT + round_trip_pct(usd, liq)) / 100
+        usd = min(total * RISK_PCT / 100 / loss_frac, total * MAX_SIZE_PCT, cash)
+    return usd
+
+
+# A trailing exit must clear costs even in the worst case, or the "profit" stop is really a loss stop (the v1 bug).
+assert (1 + TRAIL_START_PCT / 100) * (1 - TRAIL_DROP_PCT / 100) - 1 > 0.04, "trail settings can sell below costs"
+
+
 def equity(s, prices):
     return s["cash"] + sum(p["qty"] * prices.get(k, p.get("last", p["avg"])) for k, p in s["positions"].items())
 
@@ -128,10 +170,21 @@ def sell(s, key, price, liq, now, rule, why):
     gross = p["qty"] * price
     pct = cost_pct(gross, liq) if price > 0 else 0
     fee = gross * pct / 100 + (NETWORK_FEE_USD if price > 0 else 0)
-    s["cash"] += max(gross - fee, 0)
+    proceeds = max(gross - fee, 0)
+    s["cash"] += proceeds
     s["cooldown"].append(key)
     pnl = (price / p["avg"] - 1) * 100 if p["avg"] else 0
-    log_trade(now, p["name"], "sell", p["qty"], price, fee, max(gross - fee, 0), rule, f"{why} ({pnl:+.1f}% before costs)")
+    spent = p.get("cost_usd")
+    net = (proceeds / spent - 1) * 100 if spent else None
+    # loss-streak brake: count consecutive net losers, pause new buys after LOSS_STREAK of them
+    lost = (net if net is not None else pnl) < 0
+    s["streak"] = s.get("streak", 0) + 1 if lost else 0
+    if s["streak"] >= LOSS_STREAK:
+        s["paused_until"] = (now + timedelta(hours=PAUSE_HOURS)).isoformat(timespec="seconds")
+        s["streak"] = 0
+        print(f"{LOSS_STREAK} losers in a row: no new buys until {s['paused_until']}")
+    after = f", {net:+.1f}% after costs" if net is not None else ""
+    log_trade(now, p["name"], "sell", p["qty"], price, fee, proceeds, rule, f"{why} ({pnl:+.1f}% before costs{after})")
 
 
 def fetch_candidates(get=http_json):
@@ -196,14 +249,21 @@ def check_exits(s, held, cands, prices, now, count_missing=True):
         peak_gain = (p["peak"] / p["avg"] - 1) * 100
         drop = (1 - px / p["peak"]) * 100
         held_h = (now - datetime.fromisoformat(p["bought"])).total_seconds() / 3600
+        # once up BREAKEVEN_AT_PCT, the floor is entry + round-trip costs, so the trade can't end as a loser
+        be_floor = p.get("rt_cost", 3.5) + 0.5
+        reached_be = peak_gain >= BREAKEVEN_AT_PCT
         if p["liq"] and liq < RUG_LIQ_FRACTION * p["liq"]:
             sell(s, key, px, liq, now, "rug", f"liquidity collapsed to ${liq:,.0f}")
         elif chg <= -STOP_PCT:
             sell(s, key, px, liq, now, "stop loss", f"price {chg:+.1f}% from entry")
         elif peak_gain >= TRAIL_START_PCT and drop >= TRAIL_DROP_PCT:
-            sell(s, key, px, liq, now, "trailing stop", f"fell {drop:.1f}% from its peak")
+            sell(s, key, px, liq, now, "trailing stop", f"fell {drop:.1f}% from its +{peak_gain:.0f}% peak")
+        elif reached_be and chg <= be_floor:
+            sell(s, key, px, liq, now, "breakeven stop", f"was up {peak_gain:.0f}%, fell back to {chg:+.1f}%")
+        elif not reached_be and held_h >= TIME_LIMIT_H:
+            sell(s, key, px, liq, now, "time limit", f"held {held_h:.0f}h and never reached +{BREAKEVEN_AT_PCT:.0f}%")
         elif held_h >= MAX_HOURS:
-            sell(s, key, px, liq, now, "time limit", f"held {held_h:.0f}h")
+            sell(s, key, px, liq, now, "max hold", f"held {held_h:.0f}h")
 
 
 def shadow_register(s, passed, now):
@@ -270,7 +330,10 @@ def run_once(get=http_json, rug=rug_ok, now=None, pause=True):
             watch[k] = (now - timedelta(minutes=a0)).isoformat(timespec="seconds") if a0 is not None else now.isoformat(timespec="seconds")
     for k in list(watch):
         a0 = (now - datetime.fromisoformat(watch[k])).total_seconds() / 60
-        if a0 > MAX_AGE_H * 60 or (len(watch) > WATCH_MAX and a0 > 180):
+        if a0 > MAX_AGE_H * 60:
+            del watch[k]
+    if len(watch) > WATCH_MAX:                # over the cap: forget the oldest first
+        for k in sorted(watch, key=lambda k: watch[k])[:len(watch) - WATCH_MAX]:
             del watch[k]
     mature = sorted((k for k in watch if k not in fresh and k not in s["positions"]
                      and (now - datetime.fromisoformat(watch[k])).total_seconds() / 60 >= MIN_AGE_MIN),
@@ -288,7 +351,8 @@ def run_once(get=http_json, rug=rug_ok, now=None, pause=True):
     if ages:
         print(f"ages of coins seen: youngest {min(ages):.0f} min, oldest {max(ages)/60:.1f} h, remembered {len(watch)}")
     f = dict(scanned=len(cands), young_old=0, low_liq=0, low_vol=0, bad_fdv=0, weak_mom=0, overheated=0, few_buyers=0,
-             sell_pressure=0, owned_or_cooldown=0, rug_check=0, passed=0, bought=0)
+             sell_pressure=0, owned_or_cooldown=0, rug_check=0, passed=0, bought=0,
+             spiking=0, rolling_over=0, weak_trend=0, wash_trading=0, paused=0)
     passed = []
     for key, c in cands.items():
         age = age_minutes(c["created"], now)
@@ -310,12 +374,25 @@ def run_once(get=http_json, rug=rug_ok, now=None, pause=True):
             f["few_buyers"] += 1
         elif (c["sellers"] or 0) < MIN_SELLERS or (c["sells"] or 0) == 0 or (c["buys"] or 0) / c["sells"] < MIN_BUY_SELL_RATIO:
             f["sell_pressure"] += 1
+        elif (c["buys"] or 0) / max(c["buyers"] or 1, 1) > MAX_BUYS_PER_BUYER:
+            f["wash_trading"] += 1
+        elif c["chg5m"] is not None and c["chg5m"] > MAX_M5_CHG:
+            f["spiking"] += 1
+        elif c["chg5m"] is not None and c["chg5m"] < MIN_M5_CHG:
+            f["rolling_over"] += 1
+        elif c["chg6h"] is not None and c["chg6h"] < MIN_H6_CHG:
+            f["weak_trend"] += 1
         else:
             passed.append(c)
-    passed.sort(key=lambda c: c["chg1h"], reverse=True)
+    # v1 ranked by the biggest 1h pump (buying tops). Rank by real participation instead: unique buyers per $ of liquidity.
+    passed.sort(key=lambda c: (c["buyers"] or 0) / max(c["liq"] or 1, 1), reverse=True)
+    paused = s.get("paused_until") and now < datetime.fromisoformat(s["paused_until"])
     f["passed"] = len(passed)
     shadow_register(s, passed, now)
-    for c in passed[:8]:
+    if paused and passed:
+        f["paused"] = len(passed)
+        print(f"loss-streak pause until {s['paused_until']}: not buying")
+    for c in ([] if paused else passed[:8]):
         if len(s["positions"]) >= MAX_POSITIONS or f["bought"] >= MAX_BUYS_PER_RUN:
             break
         ok, why = rug(c["mint"], get) if rug is rug_ok else rug(c["mint"])
@@ -323,7 +400,7 @@ def run_once(get=http_json, rug=rug_ok, now=None, pause=True):
             f["rug_check"] += 1
             continue
         total = equity(s, prices)
-        usd = min(total * SIZE_PCT, s["cash"])
+        usd = position_size(total, s["cash"], c["liq"])
         if usd < 10:
             break
         pct = cost_pct(usd, c["liq"])
@@ -331,7 +408,8 @@ def run_once(get=http_json, rug=rug_ok, now=None, pause=True):
         qty = (usd - fee) / c["price"]
         s["cash"] -= usd
         s["positions"][c["pool"]] = {"name": c["name"], "qty": qty, "avg": c["price"], "peak": c["price"], "last": c["price"],
-                                     "liq": c["liq"], "bought": now.isoformat(timespec="seconds"), "missing": 0}
+                                     "liq": c["liq"], "bought": now.isoformat(timespec="seconds"), "missing": 0,
+                                     "cost_usd": usd, "rt_cost": round(round_trip_pct(usd, c["liq"]), 2)}
         prices[c["pool"]] = c["price"]
         log_trade(now, c["name"], "buy", qty, c["price"], fee, usd, "momentum",
                   f"+{c['chg1h']:.0f}% in 1h, liquidity ${c['liq']:,.0f}, {int(c['buyers'])} buyers, rug check {why}")
@@ -372,7 +450,8 @@ def push_files():
     if os.environ.get("SAVE_EACH_SCAN") != "1":
         return
     try:
-        have = [f for f in (STATE, TRADES, EQUITY, FUNNEL, PROBE, SHADOW) if os.path.exists(f)]
+        names = (STATE, TRADES, EQUITY, FUNNEL, PROBE, SHADOW)
+        have = [f for f in names + tuple(n.replace(".csv", "_v1.csv") for n in names) if os.path.exists(f)]
         for cmd in (["git", "add"] + have, ["git", "commit", "-m", "meme paper run"], ["git", "pull", "--rebase", "-X", "theirs"], ["git", "push"]):
             subprocess.run(cmd, check=False, capture_output=True, timeout=60)
     except Exception as e:
