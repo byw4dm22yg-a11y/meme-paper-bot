@@ -11,3 +11,4 @@ time_utc,coin,side,qty,price,fee_usd,usd,rule,reason
 2026-11-02T18:32:14+00:00,MAMESUKE / STONK,sell,58387.177,0.001140014771,1.2484,65.31,stop loss,price -11.1% from entry (-11.1% before costs)
 2026-11-03T17:59:41+00:00,MOGMAS / SOL,buy,505865.16,0.0001442915328,1.3654,74.36,momentum,"+53% in 1h, liquidity $30,581, 327 buyers, rug check clean"
 2026-11-03T18:04:46+00:00,MOGMAS / SOL,sell,505865.16,0.0001326900202,1.2568,65.87,stop loss,price -8.0% from entry (-8.0% before costs)
+2026-11-06T17:35:49+00:00,Diamond / PUMP,buy,42047.602,0.001354358372,1.121,58.07,momentum,"+26% in 1h, liquidity $118,506, 2880 buyers, rug check clean"
