@@ -15,3 +15,4 @@ time_utc,coin,side,qty,price,fee_usd,usd,rule,reason
 2026-11-06T17:39:19+00:00,Diamond / PUMP,sell,42047.602,0.001101470375,0.9447,45.37,stop loss,"price -18.7% from entry (-18.7% before costs, -21.9% after costs)"
 2026-11-09T00:03:31+00:00,HEREWEGO / SOL,buy,25644.814,0.002188111564,1.1083,57.22,momentum,"+10% in 1h, liquidity $129,342, 1012 buyers, rug check clean"
 2026-11-09T00:21:01+00:00,HEREWEGO / SOL,sell,25644.814,0.001876800013,0.972,47.16,stop loss,"price -14.2% from entry (-14.2% before costs, -17.6% after costs)"
+2026-11-09T14:50:31+00:00,PUSSY / SOL,buy,24464.639,0.002266656676,1.0983,56.55,momentum,"+21% in 1h, liquidity $184,517, 166 buyers, rug check clean"
