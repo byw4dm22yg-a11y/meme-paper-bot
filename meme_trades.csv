@@ -20,3 +20,4 @@ time_utc,coin,side,qty,price,fee_usd,usd,rule,reason
 2026-11-13T14:10:07+00:00,FOOD / SOL,buy,57506.214,0.0009643857985,1.0983,56.56,momentum,"+15% in 1h, liquidity $90,892, 525 buyers, rug check clean"
 2026-11-13T15:44:26+00:00,FOOD / SOL,sell,57506.214,0.001163378084,1.2535,65.65,trailing stop,"fell 14.2% from its +41% peak (+20.6% before costs, +16.1% after costs)"
 2026-11-13T16:22:35+00:00,Sakura / SOL,buy,98531.293,0.0005689066469,1.1074,57.16,momentum,"+32% in 1h, liquidity $64,345, 1161 buyers, rug check clean"
+2026-11-13T16:25:35+00:00,Sakura / SOL,sell,98531.293,0.0004798841485,0.9593,46.32,stop loss,"price -15.6% from entry (-15.6% before costs, -19.0% after costs)"
