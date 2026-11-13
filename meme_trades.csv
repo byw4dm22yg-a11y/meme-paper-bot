@@ -18,3 +18,4 @@ time_utc,coin,side,qty,price,fee_usd,usd,rule,reason
 2026-11-09T14:50:31+00:00,PUSSY / SOL,buy,24464.639,0.002266656676,1.0983,56.55,momentum,"+21% in 1h, liquidity $184,517, 166 buyers, rug check clean"
 2026-11-09T16:29:14+00:00,PUSSY / SOL,sell,24464.639,0.002360436082,1.1162,56.63,breakeven stop,"was up 15%, fell back to +4.1% (+4.1% before costs, +0.1% after costs)"
 2026-11-13T14:10:07+00:00,FOOD / SOL,buy,57506.214,0.0009643857985,1.0983,56.56,momentum,"+15% in 1h, liquidity $90,892, 525 buyers, rug check clean"
+2026-11-13T15:44:26+00:00,FOOD / SOL,sell,57506.214,0.001163378084,1.2535,65.65,trailing stop,"fell 14.2% from its +41% peak (+20.6% before costs, +16.1% after costs)"
